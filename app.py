@@ -1,59 +1,82 @@
+
 import streamlit as st
-import pickle
-import string
-import nltk
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.pipeline import Pipeline
+from pathlib import Path
 
-nltk.download('punkt', quiet=True)
-nltk.download('punkt_tab', quiet=True)
-nltk.download('stopwords', quiet=True)
-
-from nltk.corpus import stopwords
-from nltk.stem.porter import PorterStemmer
-
-ps = PorterStemmer()
+st.set_page_config(
+    page_title="SMS Spam Classifier",
+    page_icon="📩",
+    layout="centered"
+)
 
 
-def transform_text(text):
-    text = text.lower()
-    text = nltk.word_tokenize(text)
+@st.cache_resource
+def train_model():
+    # Load the SMS dataset stored in the GitHub repository
+    data_path = Path(__file__).parent / "spam.csv"
 
-    y = []
-    for i in text:
-        if i.isalnum():
-            y.append(i)
+    if not data_path.exists():
+        raise FileNotFoundError(
+            "spam.csv is missing from the GitHub repository."
+        )
 
-    text = y[:]
-    y.clear()
+    data = pd.read_csv(data_path, encoding="latin-1")
 
-    for i in text:
-        if i not in stopwords.words('english') and i not in string.punctuation:
-            y.append(i)
+    # The original dataset uses v1 for labels and v2 for messages
+    data = data[["v1", "v2"]].dropna()
+    data.columns = ["label", "message"]
 
-    text = y[:]
-    y.clear()
+    data["label"] = data["label"].str.strip().str.lower()
+    data = data[data["label"].isin(["ham", "spam"])]
 
-    for i in text:
-        y.append(ps.stem(i))
+    if data.empty:
+        raise ValueError("No valid SMS messages found in spam.csv.")
 
-    return " ".join(y)
+    # Train a fresh vectorizer and classifier together
+    pipeline = Pipeline([
+        (
+            "tfidf",
+            TfidfVectorizer(
+                lowercase=True,
+                stop_words="english",
+                ngram_range=(1, 2)
+            )
+        ),
+        ("classifier", MultinomialNB())
+    ])
 
-tfidf = pickle.load(open('vectorizer.pkl','rb'))
-model = pickle.load(open('model.pkl','rb'))
+    pipeline.fit(data["message"], data["label"])
+    return pipeline
 
-st.title("Email/SMS Spam Classifier")
 
-input_sms = st.text_area("Enter the message")
+st.title("📩 SMS Spam Classifier")
+st.write("Enter a text message to check whether it is spam.")
 
-if st.button('Predict'):
+try:
+    model = train_model()
 
-    # 1. preprocess
-    transformed_sms = transform_text(input_sms)
-    # 2. vectorize
-    vector_input = tfidf.transform([transformed_sms])
-    # 3. predict
-    result = model.predict(vector_input)[0]
-    # 4. Display
-    if result == 1:
-        st.header("Spam")
-    else:
-        st.header("Not Spam")
+    message = st.text_area(
+        "Enter your SMS message",
+        placeholder="Example: Congratulations! You have won a free prize."
+    )
+
+    if st.button("Predict", type="primary", use_container_width=True):
+        if not message.strip():
+            st.warning("Please enter a message first.")
+        else:
+            prediction = model.predict([message])[0]
+            probabilities = model.predict_proba([message])[0]
+            confidence = max(probabilities) * 100
+
+            if prediction == "spam":
+                st.error("🚨 Prediction: SPAM")
+            else:
+                st.success("✅ Prediction: NOT SPAM")
+
+            st.write(f"Model confidence: {confidence:.2f}%")
+
+except Exception as error:
+    st.error(f"Unable to load or train the model: {error}")
